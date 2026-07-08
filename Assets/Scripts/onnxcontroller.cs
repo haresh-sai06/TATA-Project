@@ -100,7 +100,17 @@ public class onnxcontroller : MonoBehaviour
     // and hold the car still. Set by AuraDemoReactor on a safety.alert (action="pull_over");
     // cleared when the driver resumes. Read by the HUD via emergencyStop.
     [HideInInspector] public bool emergencyStop;
-    public void SetEmergencyStop(bool on) => emergencyStop = on;
+    public void SetEmergencyStop(bool on)
+    {
+        if (emergencyStop && !on) _resumeBoostT = resumeBoostTime; // released -> kick the car back into motion
+        emergencyStop = on;
+    }
+
+    [Tooltip("After a pull-over clears, drive the car for this long so it reliably pulls away from the dead stop.")]
+    [SerializeField] private float resumeBoostTime = 2.5f;
+    [Tooltip("Throttle (fraction of motor force) applied during the resume boost.")]
+    [Range(0.2f, 1f)] [SerializeField] private float resumeBoostThrottle = 0.55f;
+    private float _resumeBoostT;
 
     // ─────────────────────────────────────────────────────────────
     // Start
@@ -187,7 +197,11 @@ public class onnxcontroller : MonoBehaviour
         bool atRedLight = false;
         float redLightThrottle = 1f;
 
-        stuckTimer = (speedKmh < 1.5f && !atRedLight) ? stuckTimer + dt : 0f;
+        // Aura resume boost: after a pull-over clears, force the car to pull away from a dead stop.
+        bool resumeBoost = _resumeBoostT > 0f;
+        if (resumeBoost) { _resumeBoostT -= dt; recovering = false; }
+
+        stuckTimer = (speedKmh < 1.5f && !atRedLight && !resumeBoost) ? stuckTimer + dt : 0f;
         if (!recovering && stuckTimer >= stuckTimeout)
         {
             recovering    = true;
@@ -206,6 +220,22 @@ public class onnxcontroller : MonoBehaviour
 
         // ── Path following ────────────────────────────────────────
         float targetSteer = PathSteer();
+
+        // Aura resume boost: drive along the path for a moment so the car reliably pulls
+        // back into traffic after Aura's pull-over (briefly bypasses obstacle throttle-scaling).
+        if (resumeBoost)
+        {
+            appliedSteer = Mathf.MoveTowards(appliedSteer, targetSteer, steerRate * dt);
+            flWC.steerAngle = appliedSteer; frWC.steerAngle = appliedSteer;
+            rlWC.motorTorque = motorForce * resumeBoostThrottle;
+            rrWC.motorTorque = motorForce * resumeBoostThrottle;
+            flWC.brakeTorque = 0f; frWC.brakeTorque = 0f;
+            rlWC.brakeTorque = 0f; rrWC.brakeTorque = 0f;
+            SyncWheels();
+            hudSpeed = speedKmh; hudThrottle = resumeBoostThrottle; hudSteer = appliedSteer;
+            hudRecovering = false;
+            return;
+        }
 
         // ── Avoidance: other cars + buildings ─────────────────────────────────────────────
         float avoidSteer,  buildingSteer;

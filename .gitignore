@@ -62,6 +62,10 @@ Assets/AI_model/Input_Data.txt
 Assets/AI_model/Screenshots/*
 !Assets/AI_model/Screenshots/.gitkeep
 
+# Editor screenshot output (debug captures)
+Assets/Screenshots/
+Assets/Screenshots.meta
+
 # OS files
 .DS_Store
 .DS_Store?
