@@ -112,6 +112,13 @@ public class onnxcontroller : MonoBehaviour
     [Range(0.2f, 1f)] [SerializeField] private float resumeBoostThrottle = 0.55f;
     private float _resumeBoostT;
 
+    [Tooltip("Steer angle (deg) toward the curb during an Aura pull-over — the car eases to the roadside instead of stopping dead.")]
+    [SerializeField] private float pullOverSteerAngle = 14f;
+
+    // Trajectory-viz hooks — read by AuraTrajectoryViz to draw the planned/predicted path.
+    public System.Collections.Generic.IReadOnlyList<Vector3> PathPoints => path;
+    public int WpIndex => wpIdx;
+
     // ─────────────────────────────────────────────────────────────
     // Start
     // ─────────────────────────────────────────────────────────────
@@ -158,12 +165,25 @@ public class onnxcontroller : MonoBehaviour
         // ── Aura: emergency pull-over (highest-priority override) ─────────
         if (emergencyStop)
         {
-            rlWC.motorTorque = 0f; rrWC.motorTorque = 0f;
-            flWC.brakeTorque = motorForce; frWC.brakeTorque = motorForce;
-            rlWC.brakeTorque = motorForce * 0.6f; rrWC.brakeTorque = motorForce * 0.6f;
-            appliedSteer = Mathf.MoveTowards(appliedSteer, 0f, steerRate * dt);
+            // Ease toward the curb (right) while still rolling, then straighten + hold — a real
+            // minimal-risk maneuver, not a dead stop. Braking is gentle at speed so the curve to
+            // the roadside is visible, then firm once slow.
+            bool rolling = speedKmh > 6f;
+            float pullSteer = rolling ? pullOverSteerAngle : 0f;
+            appliedSteer = Mathf.MoveTowards(appliedSteer, pullSteer, steerRate * 0.5f * dt);
             flWC.steerAngle = appliedSteer; frWC.steerAngle = appliedSteer;
-            if (speedKmh < 1.5f) { rb.linearVelocity = Vector3.zero; rb.angularVelocity = Vector3.zero; }
+
+            rlWC.motorTorque = 0f; rrWC.motorTorque = 0f;
+            float brake = rolling ? motorForce * 0.5f : motorForce;
+            flWC.brakeTorque = brake; frWC.brakeTorque = brake;
+            rlWC.brakeTorque = brake * 0.6f; rrWC.brakeTorque = brake * 0.6f;
+
+            if (speedKmh < 1.2f)
+            {
+                rb.linearVelocity = Vector3.zero; rb.angularVelocity = Vector3.zero;
+                appliedSteer = Mathf.MoveTowards(appliedSteer, 0f, steerRate * dt);
+                flWC.steerAngle = appliedSteer; frWC.steerAngle = appliedSteer;
+            }
             SyncWheels();
             hudSpeed = speedKmh;
             return;
@@ -328,15 +348,18 @@ public class onnxcontroller : MonoBehaviour
         }
 
         // Walk forward along the path to find a point lookaheadDist metres ahead
+        // Look further ahead as speed rises — this turns twitchy per-frame corrections into
+        // smooth, anticipatory arcs (a big part of realistic-looking steering).
+        float   ld          = lookaheadDist + Mathf.Clamp(rb.linearVelocity.magnitude * 0.6f, 0f, 16f);
         float   accumulated = 0f;
         Vector3 target      = path[wpIdx];
 
         for (int i = wpIdx; i < path.Length - 1; i++)
         {
             float seg = Vector3.Distance(path[i], path[i + 1]);
-            if (accumulated + seg >= lookaheadDist)
+            if (accumulated + seg >= ld)
             {
-                float t = (lookaheadDist - accumulated) / seg;
+                float t = (ld - accumulated) / seg;
                 target = Vector3.Lerp(path[i], path[i + 1], t);
                 break;
             }
@@ -602,6 +625,7 @@ public class onnxcontroller : MonoBehaviour
         }
         pts.Add(waypointParent.GetChild(n - 1).position);
         path = pts.ToArray();
+        path = SmoothPath(path, 4);
         ApplyBestStart();
         Debug.Log($"[AI] Path (child transforms): {n} waypoints → {path.Length} pts, starting at {wpIdx}");
         DrawDebugPath();
@@ -620,6 +644,7 @@ public class onnxcontroller : MonoBehaviour
         }
         pts.Add(lr.GetPosition(n - 1));
         path = pts.ToArray();
+        path = SmoothPath(path, 4);
         ApplyBestStart();
         Debug.Log($"[AI] Path (LineRenderer on '{lr.gameObject.name}'): {n} pts → {path.Length} pts, starting at {wpIdx}");
         DrawDebugPath();
@@ -641,6 +666,62 @@ public class onnxcontroller : MonoBehaviour
     {
         for (int i = 0; i < path.Length - 1; i++)
             Debug.DrawLine(path[i] + Vector3.up, path[i + 1] + Vector3.up, Color.cyan, 60f);
+    }
+
+    // Chaikin corner-cutting — rounds the waypoint polyline into smooth curves so the car
+    // sweeps through turns instead of tracking hard kinks at each waypoint. Straight
+    // (collinear) runs are left unchanged; only the corners get rounded.
+    private static Vector3[] SmoothPath(Vector3[] pts, int iterations)
+    {
+        if (pts == null || pts.Length < 3) return pts;
+        // 1. Decimate near-collinear points back to the genuine corners, so smoothing has real
+        //    corners to round (a densely-subdivided polyline would otherwise round almost nothing).
+        var keys = new List<Vector3> { pts[0] };
+        for (int i = 1; i < pts.Length - 1; i++)
+        {
+            Vector3 a = pts[i] - pts[i - 1]; a.y = 0f;
+            Vector3 b = pts[i + 1] - pts[i]; b.y = 0f;
+            if (a.sqrMagnitude < 1e-4f || b.sqrMagnitude < 1e-4f) continue;
+            if (Vector3.Angle(a, b) > 5f) keys.Add(pts[i]);
+        }
+        keys.Add(pts[pts.Length - 1]);
+        // 2. Catmull-Rom INTERPOLATION through the keys — smooth curves that pass THROUGH every
+        //    waypoint, so the path stays on the road and never cuts corners across a building
+        //    (which is what Chaikin corner-cutting did, driving the car into walls).
+        if (keys.Count < 3) return keys.ToArray();
+        int seg = Mathf.Clamp(iterations * 2, 4, 10);
+        const float maxDev = 5f;   // never stray more than this (m) from the on-road waypoint path
+        var outp = new List<Vector3>(keys.Count * seg + 1);
+        int m = keys.Count;
+        for (int i = 0; i < m - 1; i++)
+        {
+            Vector3 p0 = keys[Mathf.Max(i - 1, 0)];
+            Vector3 p1 = keys[i];
+            Vector3 p2 = keys[i + 1];
+            Vector3 p3 = keys[Mathf.Min(i + 2, m - 1)];
+            for (int s = 0; s < seg; s++)
+            {
+                float t = s / (float)seg, t2 = t * t, t3 = t2 * t;
+                Vector3 pos = 0.5f * ((2f * p1) + (-p0 + p2) * t + (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 + (-p0 + 3f * p1 - 3f * p2 + p3) * t3);
+                // Safety clamp: keep every smoothed point within maxDev of the raw waypoint
+                // polyline, so a spline overshoot can never push the path off-road into a wall.
+                Vector3 near = pos; float best = float.MaxValue;
+                for (int k = 0; k < m - 1; k++)
+                {
+                    Vector3 a = keys[k], b = keys[k + 1], ab = b - a; ab.y = 0f;
+                    Vector3 ap = pos - a; ap.y = 0f;
+                    float tt = ab.sqrMagnitude < 1e-6f ? 0f : Mathf.Clamp01(Vector3.Dot(ap, ab) / ab.sqrMagnitude);
+                    Vector3 proj = a + ab * tt;
+                    float dd = (pos.x - proj.x) * (pos.x - proj.x) + (pos.z - proj.z) * (pos.z - proj.z);
+                    if (dd < best) { best = dd; near = new Vector3(proj.x, pos.y, proj.z); }
+                }
+                float dist = Mathf.Sqrt(best);
+                if (dist > maxDev) pos = near + (pos - near) * (maxDev / dist);
+                outp.Add(pos);
+            }
+        }
+        outp.Add(keys[m - 1]);
+        return outp.ToArray();
     }
 
     // ─────────────────────────────────────────────────────────────

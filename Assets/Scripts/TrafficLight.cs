@@ -4,9 +4,9 @@ public class TrafficLight : MonoBehaviour
 {
     public enum State { Red, Yellow, Green }
 
-    [SerializeField] private float greenDuration  = 10f;
-    [SerializeField] private float yellowDuration = 3f;
-    [SerializeField] private float redDuration    = 10f;
+    [SerializeField] private float greenDuration  = 20f;   // mostly green — cars flow, rarely stop
+    [SerializeField] private float yellowDuration = 2f;
+    [SerializeField] private float redDuration    = 6f;    // brief red
 
     [HideInInspector] public float startDelay;
 

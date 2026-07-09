@@ -216,14 +216,16 @@ public class AICarController : MonoBehaviour
         }
 
         // Walk lookahead distance along path
+        // Speed-scaled lookahead — smooth anticipatory arcs instead of twitchy corrections.
+        float   ld          = lookaheadDist + Mathf.Clamp(rb.linearVelocity.magnitude * 0.6f, 0f, 16f);
         float   accumulated = 0f;
         Vector3 target      = pathPts[wpIdx];
         for (int i = wpIdx; i < pathPts.Length - 1; i++)
         {
             float seg = Vector3.Distance(pathPts[i], pathPts[i + 1]);
-            if (accumulated + seg >= lookaheadDist)
+            if (accumulated + seg >= ld)
             {
-                float t = (lookaheadDist - accumulated) / seg;
+                float t = (ld - accumulated) / seg;
                 target = Vector3.Lerp(pathPts[i], pathPts[i + 1], t);
                 break;
             }
@@ -446,6 +448,7 @@ public class AICarController : MonoBehaviour
         }
         pts.Add(pathRoot.GetChild(n - 1).position);
         pathPts = pts.ToArray();
+        pathPts = SmoothPath(pathPts, 4);
         ApplyBestStart();
         Debug.Log($"[AICarController] '{name}': path from child transforms — {pathPts.Length} pts, start {wpIdx}");
         DrawDebugPath();
@@ -462,6 +465,7 @@ public class AICarController : MonoBehaviour
         }
         pts.Add(lr.GetPosition(n - 1));
         pathPts = pts.ToArray();
+        pathPts = SmoothPath(pathPts, 4);
         ApplyBestStart();
         Debug.Log($"[AICarController] '{name}': path from LineRenderer '{lr.gameObject.name}' — {pathPts.Length} pts, start {wpIdx}");
         DrawDebugPath();
@@ -483,6 +487,58 @@ public class AICarController : MonoBehaviour
     {
         for (int i = 0; i < pathPts.Length - 1; i++)
             Debug.DrawLine(pathPts[i] + Vector3.up, pathPts[i + 1] + Vector3.up, Color.cyan, 60f);
+    }
+
+    // Chaikin corner-cutting — rounds the waypoint polyline into smooth curves so the car
+    // sweeps through turns instead of tracking hard kinks. Straight runs are left unchanged.
+    private static Vector3[] SmoothPath(Vector3[] pts, int iterations)
+    {
+        if (pts == null || pts.Length < 3) return pts;
+        // Decimate near-collinear points back to genuine corners, then Chaikin corner-cut with a
+        // wide radius so the car sweeps through turns instead of tracking hard waypoint kinks.
+        var keys = new List<Vector3> { pts[0] };
+        for (int i = 1; i < pts.Length - 1; i++)
+        {
+            Vector3 a = pts[i] - pts[i - 1]; a.y = 0f;
+            Vector3 b = pts[i + 1] - pts[i]; b.y = 0f;
+            if (a.sqrMagnitude < 1e-4f || b.sqrMagnitude < 1e-4f) continue;
+            if (Vector3.Angle(a, b) > 5f) keys.Add(pts[i]);
+        }
+        keys.Add(pts[pts.Length - 1]);
+        // Catmull-Rom INTERPOLATION through the keys — smooth curves that pass THROUGH every
+        // waypoint, so the path stays on the road instead of cutting corners into buildings.
+        if (keys.Count < 3) return keys.ToArray();
+        int seg = Mathf.Clamp(iterations * 2, 4, 10);
+        const float maxDev = 5f;   // never stray more than this (m) from the on-road waypoint path
+        var outp = new List<Vector3>(keys.Count * seg + 1);
+        int m = keys.Count;
+        for (int i = 0; i < m - 1; i++)
+        {
+            Vector3 p0 = keys[Mathf.Max(i - 1, 0)];
+            Vector3 p1 = keys[i];
+            Vector3 p2 = keys[i + 1];
+            Vector3 p3 = keys[Mathf.Min(i + 2, m - 1)];
+            for (int s = 0; s < seg; s++)
+            {
+                float t = s / (float)seg, t2 = t * t, t3 = t2 * t;
+                Vector3 pos = 0.5f * ((2f * p1) + (-p0 + p2) * t + (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 + (-p0 + 3f * p1 - 3f * p2 + p3) * t3);
+                Vector3 near = pos; float best = float.MaxValue;
+                for (int k = 0; k < m - 1; k++)
+                {
+                    Vector3 a = keys[k], b = keys[k + 1], ab = b - a; ab.y = 0f;
+                    Vector3 ap = pos - a; ap.y = 0f;
+                    float tt = ab.sqrMagnitude < 1e-6f ? 0f : Mathf.Clamp01(Vector3.Dot(ap, ab) / ab.sqrMagnitude);
+                    Vector3 proj = a + ab * tt;
+                    float dd = (pos.x - proj.x) * (pos.x - proj.x) + (pos.z - proj.z) * (pos.z - proj.z);
+                    if (dd < best) { best = dd; near = new Vector3(proj.x, pos.y, proj.z); }
+                }
+                float dist = Mathf.Sqrt(best);
+                if (dist > maxDev) pos = near + (pos - near) * (maxDev / dist);
+                outp.Add(pos);
+            }
+        }
+        outp.Add(keys[m - 1]);
+        return outp.ToArray();
     }
 
     // ─────────────────────────────────────────────────────────────────
