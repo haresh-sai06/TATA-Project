@@ -35,14 +35,20 @@ public static class AuraCinematicSetup
             Debug.Log($"[Aura] Added AuraCameraDirector to '{cam.name}'.");
         }
 
-        // 2. Cockpit HUD object.
+        // 2. Cockpit HUD object (+ speed-limit alerts).
         var hud = Object.FindFirstObjectByType<AuraCockpitHud>();
         if (hud == null)
         {
             var go = new GameObject("Aura HUD");
             Undo.RegisterCreatedObjectUndo(go, "Create Aura HUD");
             go.AddComponent<AuraCockpitHud>();
-            Debug.Log("[Aura] Created 'Aura HUD' with AuraCockpitHud.");
+            go.AddComponent<AuraSpeedLimit>();
+            Debug.Log("[Aura] Created 'Aura HUD' with AuraCockpitHud + AuraSpeedLimit.");
+        }
+        else if (Object.FindFirstObjectByType<AuraSpeedLimit>() == null)
+        {
+            Undo.AddComponent<AuraSpeedLimit>(hud.gameObject);
+            Debug.Log("[Aura] Added AuraSpeedLimit to the existing Aura HUD.");
         }
 
         // 3. Takeover rig sanity-check (AuraClient + AuraDemoReactor).
@@ -59,7 +65,7 @@ public static class AuraCinematicSetup
         EditorSceneManager.MarkSceneDirty(cam.gameObject.scene);
         Debug.Log("[Aura] Cinematic setup complete. Press Play, then [V] to cycle views (Cockpit is the first-person seat).");
         EditorUtility.DisplayDialog("Aura",
-            "Cinematic cameras set up.\n\nPress Play, then:\n• [V] cycle views (or [1]-[5])\n• Cockpit = first-person seat\n• [K] simulate a drowsiness takeover\n\nTip: nudge 'Cockpit Offset' on the camera until the hood sits low in frame.",
+            "Cinematic cameras + speed-limit alerts set up.\n\nPress Play, then:\n• [V] cycle views (or [1]-[5])\n• Cockpit = first-person seat\n• [K] simulate a drowsiness takeover\n• Speed-limit sign shows top-left; the car warns (flash + beep) when over\n• [ and ] lower / raise the speed limit\n\nTip: nudge 'Cockpit Offset' on the camera until the hood sits low in frame.",
             "Got it");
     }
 }
