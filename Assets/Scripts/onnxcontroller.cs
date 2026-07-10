@@ -14,6 +14,11 @@ public class onnxcontroller : MonoBehaviour
     [SerializeField] private float motorForce   = 1500f;
     [SerializeField] private float maxSpeedKmh  = 45f;   // raised: must exceed AI (≈40 km/h) to overtake
     [SerializeField] private float minThrottle  = 0.45f;
+
+    /// <summary>Set the car's speed cap (km/h). The dashboard Drive Control uses this to actually
+    /// change how fast the car drives — the motor model then accelerates (or eases) toward it.</summary>
+    public void SetMaxSpeed(float kmh) { maxSpeedKmh = Mathf.Clamp(kmh, 5f, 130f); }
+    public float MaxSpeedKmh => maxSpeedKmh;
     [SerializeField] private float maxSteerAngle = 30f;   // slight increase for tighter overtake manoeuvres
     [SerializeField] private float steerRate     = 90f;
 

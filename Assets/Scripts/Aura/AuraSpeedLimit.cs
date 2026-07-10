@@ -1,3 +1,4 @@
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Aura
@@ -22,8 +23,8 @@ namespace Aura
         [SerializeField] private float sustainSeconds = 0.4f;
 
         [Header("Route zones (optional)")]
-        [Tooltip("Vary the limit along the route so the sign changes as you drive.")]
-        [SerializeField] private bool useZones = true;
+        [Tooltip("Vary the limit along the route. Off = a fixed limit (also set by the dashboard Drive Control).")]
+        [SerializeField] private bool useZones = false;
         [SerializeField] private float[] zoneLimits = { 60f, 40f, 80f, 50f };
         [Tooltip("How many waypoints each zone spans.")]
         [SerializeField] private int zoneEveryWaypoints = 6;
@@ -45,6 +46,8 @@ namespace Aura
         private float _lastBeep;
         private float _lastSend;
         private float _flash;            // banner flash phase
+        private float _cmdSpeed = -1f;   // target speed commanded by the dashboard; -1 = none (car drives itself)
+        private float _cmdLimit = -1f;   // limit commanded by the dashboard; -1 = use serialized/zone limit
 
         public bool IsSpeeding => _speeding;
         public float CurrentLimit => ActiveLimit();
@@ -54,6 +57,7 @@ namespace Aura
             if (car == null) car = FindFirstObjectByType<onnxcontroller>();
             if (car != null) _rb = car.GetComponent<Rigidbody>();
             _client = FindFirstObjectByType<AuraClient>();
+            if (_client != null) _client.OnMessage += OnAura;
 
             _audio = gameObject.AddComponent<AudioSource>();
             _audio.playOnAwake = false;
@@ -61,8 +65,42 @@ namespace Aura
             _beep = MakeBeep();
         }
 
+        private void OnDestroy()
+        {
+            if (_client != null) _client.OnMessage -= OnAura;
+        }
+
+        // The System-A dashboard Drive Control sets the car's speed + limit; drive the HUD/alert from it.
+        private void OnAura(string type, JObject payload)
+        {
+            if (type != "control.speed" || payload == null) return;
+            float? lim = payload.Value<float?>("limitKmh");
+            float? sp = payload.Value<float?>("speedKmh");
+            if (lim.HasValue) _cmdLimit = lim.Value;                 // fixed 50 sign
+            if (sp.HasValue)
+            {
+                _cmdSpeed = sp.Value;
+                if (car != null) car.SetMaxSpeed(sp.Value);          // raise the cap so the wheels don't brake against us
+            }
+        }
+
+        // Smoothly hold the car at the dashboard-commanded speed (precise) — steering stays autonomous.
+        private void FixedUpdate()
+        {
+            if (_cmdSpeed < 0f) return;
+            if (_rb == null && car != null) _rb = car.GetComponent<Rigidbody>();
+            if (_rb == null) return;
+            Vector3 v = _rb.linearVelocity;
+            Vector3 flat = new Vector3(v.x, 0f, v.z);
+            float target = _cmdSpeed / 3.6f;                          // km/h -> m/s
+            float next = Mathf.MoveTowards(flat.magnitude, target, 12f * Time.fixedDeltaTime);
+            Vector3 dir = flat.sqrMagnitude > 0.25f ? flat.normalized : car.transform.forward;
+            _rb.linearVelocity = dir * next + Vector3.up * v.y;       // control horizontal speed, keep gravity
+        }
+
         private float ActiveLimit()
         {
+            if (_cmdLimit > 0f) return _cmdLimit;   // a dashboard-commanded fixed limit wins
             float baseLimit = speedLimitKmh;
             if (useZones && zoneLimits != null && zoneLimits.Length > 0 && car != null && zoneEveryWaypoints > 0)
             {
