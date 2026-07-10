@@ -87,6 +87,9 @@ namespace Aura
         // Smoothly hold the car at the dashboard-commanded speed (precise) — steering stays autonomous.
         private void FixedUpdate()
         {
+            // During an emergency takeover, hand FULL control back to the car so it can brake and
+            // pull over safely — never force the commanded speed (that would drive it into a crash).
+            if (car != null && car.emergencyStop) { _cmdSpeed = -1f; return; }
             if (_cmdSpeed < 0f) return;
             if (_rb == null && car != null) _rb = car.GetComponent<Rigidbody>();
             if (_rb == null) return;
