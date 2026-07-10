@@ -87,18 +87,34 @@ namespace Aura
         // Smoothly hold the car at the dashboard-commanded speed (precise) — steering stays autonomous.
         private void FixedUpdate()
         {
-            // During an emergency takeover, hand FULL control back to the car so it can brake and
-            // pull over safely — never force the commanded speed (that would drive it into a crash).
-            if (car != null && car.emergencyStop) { _cmdSpeed = -1f; return; }
-            if (_cmdSpeed < 0f) return;
             if (_rb == null && car != null) _rb = car.GetComponent<Rigidbody>();
             if (_rb == null) return;
-            Vector3 v = _rb.linearVelocity;
-            Vector3 flat = new Vector3(v.x, 0f, v.z);
+
+            // ── EMERGENCY TAKEOVER: a guaranteed-safe minimal-risk stop. We take deterministic
+            // control of the car's motion — smooth straight-line braking + strong rotation damping —
+            // so the pull-over can NEVER spin out, flip, or crash, whatever the speed or surroundings.
+            if (car != null && car.emergencyStop)
+            {
+                _cmdSpeed = -1f;                                   // drop any dashboard speed command
+                Vector3 v = _rb.linearVelocity;
+                Vector3 flat = new Vector3(v.x, 0f, v.z);
+                flat = Vector3.MoveTowards(flat, Vector3.zero, 9f * Time.fixedDeltaTime);  // ~9 m/s² brake
+                _rb.linearVelocity = new Vector3(flat.x, Mathf.Clamp(v.y, -20f, 1f), flat.z); // keep gravity, no launch
+                _rb.angularVelocity = Vector3.MoveTowards(_rb.angularVelocity, Vector3.zero, 10f * Time.fixedDeltaTime);
+                return;
+            }
+
+            if (_cmdSpeed < 0f) return;
+
+            // ── Normal: hold the dashboard-commanded speed. Keep the car's heading (no forced
+            // steering) and clamp spin so speed control can't ever destabilize the car.
+            Vector3 vel = _rb.linearVelocity;
+            Vector3 f = new Vector3(vel.x, 0f, vel.z);
             float target = _cmdSpeed / 3.6f;                          // km/h -> m/s
-            float next = Mathf.MoveTowards(flat.magnitude, target, 12f * Time.fixedDeltaTime);
-            Vector3 dir = flat.sqrMagnitude > 0.25f ? flat.normalized : car.transform.forward;
-            _rb.linearVelocity = dir * next + Vector3.up * v.y;       // control horizontal speed, keep gravity
+            float next = Mathf.MoveTowards(f.magnitude, target, 12f * Time.fixedDeltaTime);
+            Vector3 dir = f.sqrMagnitude > 0.25f ? f.normalized : car.transform.forward;
+            _rb.linearVelocity = dir * next + Vector3.up * vel.y;
+            _rb.angularVelocity = Vector3.ClampMagnitude(_rb.angularVelocity, 1.5f);  // anti spin-out safety
         }
 
         private float ActiveLimit()
